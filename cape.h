@@ -5,6 +5,9 @@
 
 Cape Copyright (c) 2012-2017, Giovanni Blu Mitolo All rights reserved.
 
+Modified heavily by Colin Gray (see https://github.com/gioblu/Cape for the
+original source code).
+
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
@@ -21,9 +24,9 @@ limitations under the License. */
 
 typedef struct {
     char salt; // Salt used for encryption, can be exchanged if encrypted
-    char *key;              //
+    char *key;          //
     uint16_t length;    // Keep these private and safe
-    char reduced_key;       //
+    char reduced_key;   //
 } cape_t;
 
 void cape_init(cape_t *cape, char *key, uint16_t length, uint8_t s);
