@@ -30,14 +30,53 @@ typedef struct {
 } cape_t;
 
 void cape_init(cape_t *cape, char *key, uint16_t length, uint8_t s);
-void cape_crypt(cape_t *cape, char *source, char *destination, uint16_t length);
-bool process_record_cape(char keycode, cape_t *cape, char *cape_password, uint16_t *cape_password_length, uint16_t salt);
+void cape_hash(cape_t *cape, char *source, char *destination, uint16_t length);
+void cape_encrypt(cape_t *cape, char *source, char *destination, uint16_t length, uint8_t iv);
+void cape_decrypt(cape_t *cape, char *source, char *destination, uint16_t length);
+void cape_output(char *source, uint16_t length);
+
+void cape_output(char *source, uint16_t length) {
+    bool is_string = true;
+    for (int i = 0 ; i < length ; i++) {
+        char c = source[i];
+        if (c < ' ' || c > '~') {
+            is_string = false;
+            break;
+        }
+    }
+
+    if (is_string) {
+        Serial.print("\"");
+    }
+    else {
+        Serial.print("{");
+    }
+
+    for (int i = 0 ; i < length ; i++) {
+        if (is_string) {
+            Serial.print(source[i]);
+        }
+        else {
+            if (i) {
+                Serial.print(",");
+            }
+            Serial.print((uint8_t)source[i]);
+        }
+    }
+
+    if (is_string) {
+        Serial.println("\"");
+    }
+    else {
+        Serial.println("}");
+    }
+}
 
 /// CAPE
 
 /* Compute a 1 byte version of the encryption key */
-uint16_t cape_compute_reduced_key(char *key, uint16_t length) {
-    uint16_t reduced_key = 0;
+char cape_compute_reduced_key(char *key, uint16_t length) {
+    char reduced_key = 0;
     // Reduced key computation
     for(uint16_t i = 0; i < length; i++) {
         reduced_key ^= (key[i] << (i % 8));
@@ -54,7 +93,7 @@ void cape_init(cape_t *cape, char *key, uint16_t length, uint8_t salt) {
 
 /* Symmetric chiper using private key, reduced key and optionally salt:
    (max 65535 characters) */
-void cape_crypt(cape_t *cape,
+void cape_hash(cape_t *cape,
     char *source,
     char *destination,
     uint16_t length)
@@ -65,5 +104,48 @@ void cape_crypt(cape_t *cape,
             cape->key[(cape->reduced_key ^ cape->salt ^ i) % cape->length]
         );
     }
-    destination[length] = 0;
 }
+
+/* Decrypt data:
+   (max 65535 characters) */
+void cape_decrypt(cape_t *cape, char *source, char *destination, uint16_t length) {
+    // 1 - Hash data without triyng to decode initialization vector
+    cape_hash(cape, source, destination, length + 1);
+    // 2 - Decrypt initialization vector
+    destination[length] ^= (cape->reduced_key ^ cape->salt);
+    // 3 - Decrypt data with private key, reduced key and salt
+    for(uint16_t i = 0; i < length; i++) {
+        destination[i] ^= (
+            (destination[length] ^ i) ^
+            cape->key[(cape->salt ^ i ^ cape->reduced_key) % cape->length]
+        );
+    }
+    // 4 - Hash data with key (static symmetric hashing)
+    cape_hash(cape, destination, destination, length);
+    destination[length] = 0;
+};
+
+/* Stream chipher, private key, initialization vector based encryption
+   algorithm (max 65535 characters):  */
+void cape_encrypt(
+    cape_t *cape,
+    char *source,
+    char *destination,
+    uint16_t length,
+    uint8_t iv
+) {
+    destination[length] = iv;
+    // 1 - Hash data with key (static symmetric hashing)
+    cape_hash(cape, source, destination, length);
+    // 2 - Encrypt data with private key, reduced key and salt
+    for(uint16_t i = 0; i < length; i++) {
+        destination[i] ^= (
+            (destination[length] ^ i) ^
+            cape->key[(cape->salt ^ i ^ cape->reduced_key) % cape->length]
+        );
+    }
+    // 3 - Encrypt initialization vector using reduced key and salt
+    destination[length] ^= (cape->reduced_key ^ cape->salt);
+    // 4 - Further encrypt result and initialization vector
+    cape_hash(cape, destination, destination, length + 1);
+};

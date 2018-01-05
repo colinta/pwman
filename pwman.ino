@@ -1,4 +1,4 @@
-#define PWMAN_VERSION 2
+#define PWMAN_VERSION 3
 
 #include <math.h>
 #include <Arduboy2.h>
@@ -32,7 +32,7 @@ uint8_t nextAppState = STATE_VERIFY;
 #define MAX_PASSWORD_LEN 100
 #define MAX_UNLOCK_LEN 10
 cape_t cape;
-uint8_t cape_salt = 0;
+uint8_t cape_salt = '[';
 uint8_t selectedEntry = 0;
 char verifyPassword[] = {0,0,0,0,0,0,0,0,0,0,0};
 char buffer[MAX_PASSWORD_LEN + 1];
@@ -207,15 +207,22 @@ void mainLoop() {
 void writeLoop() {
   if (!serial) { return; }
 
-  if (serial >= 32 && serial < 127 && (nextAppState == STATE_WRITE_NAME ? strlen(buffer) < MAX_NAME_LEN : strlen(buffer) < MAX_PASSWORD_LEN)) {
+  if (serial >= 32 && serial < 127 && (appState == STATE_WRITE_NAME ? strlen(buffer) < MAX_NAME_LEN : strlen(buffer) < MAX_PASSWORD_LEN)) {
     buffer[strlen(buffer)] = (char)serial;
-    if (nextAppState == STATE_WRITE_NAME) {
+    if (appState == STATE_WRITE_NAME) {
       Serial.print((char)serial);
+    }
+  }
+  else if (serial == 127 && strlen(buffer) > 0) {
+    buffer[strlen(buffer) - 1] = 0;
+    if (appState == STATE_WRITE_NAME) {
+      Serial.print("\r\nEntry name: ");
+      Serial.print(buffer);
     }
   }
   else if (serial == 13) {
     PasswordEntry *entry = &entries[selectedEntry];
-    if (nextAppState == STATE_WRITE_NAME) {
+    if (appState == STATE_WRITE_NAME) {
       entry->name = (char*)malloc(sizeof(char) * (strlen(buffer) + 1));
       strcpy(entry->name, buffer);
 
@@ -226,7 +233,7 @@ void writeLoop() {
     else {
       entry->pwLen = strlen(buffer);
       entry->pw = (char*)malloc(sizeof(char) * (strlen(buffer) + 1));
-      cape_crypt(&cape, buffer, entry->pw, entry->pwLen);
+      cape_encrypt(&cape, buffer, entry->pw, entry->pwLen, random(0, 255));
 
       nextAppState = STATE_MAIN;
       Serial.println("\r\n");
@@ -238,7 +245,7 @@ void writeLoop() {
 void outputLoop() {
   PasswordEntry *entry = &entries[selectedEntry];
   if (entry->pw) {
-    cape_crypt(&cape, entry->pw, buffer, entry->pwLen);
+    cape_decrypt(&cape, entry->pw, buffer, entry->pwLen);
 
     Keyboard.begin();
     for (uint8_t entry_i = 0 ; entry_i < entry->pwLen ; ++entry_i) {
