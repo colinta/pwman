@@ -1,12 +1,22 @@
-#define PWMAN_VERSION 3
+#define PWMAN_VERSION 4
 
 #include <math.h>
 #include <Arduboy2.h>
 #include <Keyboard.h>
 #include "cape.h"
 
+// copy/paste from Arduboy (why aren't these exposed?)
+#define CHAR_WIDTH 6
+#define SMALL_SPACE 3
+#define CHAR_HEIGHT 8
+
 #define KC_ENTER 10
 #define FRAME_RATE 60
+
+#define UNLOCK_U 1
+#define UNLOCK_D 2
+#define UNLOCK_L 3
+#define UNLOCK_R 4
 
 Arduboy2 arduboy;
 
@@ -29,12 +39,21 @@ uint8_t nextAppState = STATE_VERIFY;
 
 #define MAX_ENTRIES 8
 #define MAX_NAME_LEN 20
+#define MAX_GRID_LEN 14
 #define MAX_PASSWORD_LEN 100
-#define MAX_UNLOCK_LEN 10
+#define MAX_UNLOCK_LEN 30
+#define PW_EXTRA 1
+
 cape_t cape;
 uint8_t cape_salt = '[';
 uint8_t selectedEntry = 0;
-char verifyPassword[] = {0,0,0,0,0,0,0,0,0,0,0};
+
+char password[MAX_UNLOCK_LEN + 1];
+char password_length = 0;
+
+char grid_entries[MAX_GRID_LEN];
+char grid_index = 0;
+
 char buffer[MAX_PASSWORD_LEN + 1];
 PasswordEntry entries[] = {
   { .name = NULL, .pw = NULL, .pwLen = 0 },
@@ -124,7 +143,10 @@ void loop() {
   arduboy.display();
 }
 
-void switchToVerify() {}
+void switchToVerify() {
+  resetGridEntries();
+  resetPassword();
+}
 void switchToMain() {}
 void switchToWrite() {
   PasswordEntry *entry = &entries[selectedEntry];
@@ -136,42 +158,75 @@ void switchToOutput() {}
 
 void verifyLoop() {
   if (arduboy.justPressed(A_BUTTON)) {
-    for (uint8_t i = 0; i < MAX_UNLOCK_LEN; ++i) {
-      verifyPassword[i] = 0;
-    }
-  }
-
-  if (arduboy.justPressed(B_BUTTON)) {
-    cape_init(&cape, verifyPassword, strlen(verifyPassword), cape_salt);
+    cape_init(&cape, password, password_length, cape_salt);
     nextAppState = STATE_MAIN;
+    return;
   }
 
   char pressed = 0;
   if (arduboy.justPressed(UP_BUTTON)) {
-    pressed = 'a';
+    pressed = UNLOCK_U;
   }
   else if (arduboy.justPressed(DOWN_BUTTON)) {
-    pressed = 'b';
+    pressed = UNLOCK_D;
   }
   else if (arduboy.justPressed(LEFT_BUTTON)) {
-    pressed = 'c';
+    pressed = UNLOCK_L;
   }
   else if (arduboy.justPressed(RIGHT_BUTTON)) {
-    pressed = 'd';
+    pressed = UNLOCK_R;
   }
 
-  if (pressed && strlen(verifyPassword) < MAX_UNLOCK_LEN) {
-    verifyPassword[strlen(verifyPassword)] = pressed;
+  if (pressed && grid_index < MAX_GRID_LEN) {
+    grid_entries[grid_index++] = pressed;
   }
 
-  arduboy.setCursor(0, 8*selectedEntry);
-  if (strlen(verifyPassword)) {
-    for (uint8_t i = 0; i < strlen(verifyPassword); ++i) {
-      arduboy.print("*");
+  byte x = WIDTH / 2, y = HEIGHT / 2;
+  byte dx = WIDTH / 4, dy = HEIGHT / 4;
+  for (uint8_t i = 0; i < grid_index; ++i) {
+    char p = grid_entries[i];
+    switch (p) {
+      case UNLOCK_U:
+        if (y == 1 && dy == 0) { y = 0; }
+        else { y = y - dy; }
+        dy /= 2;
+        break;
+      case UNLOCK_D:
+        y = y + dy;
+        dy /= 2;
+        break;
+      case UNLOCK_L:
+        if (x == 1 && dx == 0) { x = 0; }
+        else { x = x - dx; }
+        dx /= 2;
+        break;
+      case UNLOCK_R:
+        x = x + dx;
+        dx /= 2;
+        break;
     }
   }
-  else {
-    arduboy.print("_");
+
+  if (arduboy.justPressed(B_BUTTON)) {
+    password[password_length++] = x;
+    password[password_length++] = y;
+    resetGridEntries();
+  }
+
+  arduboy.drawFastVLine(x, 0, HEIGHT);
+  arduboy.drawFastHLine(0, y, WIDTH);
+
+  uint8_t cx = (x > WIDTH / 4 ? 0 : WIDTH / 2);
+  uint8_t cy = (y > HEIGHT / 4 ? 0 : HEIGHT / 2);
+  arduboy.setCursor(cx, cy);
+  arduboy.print(x);
+  arduboy.print(",");
+  arduboy.print(y);
+
+  arduboy.setCursor(0, HEIGHT - CHAR_HEIGHT);
+  for (uint8_t i = 0; i < password_length; ++i) {
+    arduboy.print((uint8_t)password[i]);
+    arduboy.setCursor(arduboy.getCursorX() + SMALL_SPACE, arduboy.getCursorY());
   }
 }
 
@@ -232,11 +287,15 @@ void writeLoop() {
     }
     else {
       entry->pwLen = strlen(buffer);
-      entry->pw = (char*)malloc(sizeof(char) * (strlen(buffer) + 1));
-      cape_encrypt(&cape, buffer, entry->pw, entry->pwLen, random(0, 255));
+      entry->pw = (char*)malloc(sizeof(char) * (entry->pwLen + PW_EXTRA));
+      uint8_t salt = random(0, 255);
+      Serial.println("");
+      Serial.print("Salt: ");
+      Serial.print(salt);
+      cape_encrypt(&cape, buffer, entry->pw, entry->pwLen, salt);
 
       nextAppState = STATE_MAIN;
-      Serial.println("\r\n");
+      Serial.println("");
       pwmanSave();
     }
   }
@@ -267,7 +326,7 @@ void outputLoop() {
 }
 
 void resetBuffer() {
-  for (uint16_t i = 0 ; i < MAX_PASSWORD_LEN + 1 ; ++i) {
+  for (uint16_t i = 0 ; i <= MAX_PASSWORD_LEN + 1 ; ++i) {
     buffer[i] = 0;
   }
 }
@@ -316,8 +375,8 @@ void pwmanInit() {
 
     name_len = EEPROM.read(eeprom_ptr++);
     if (name_len) {
-      str = (char*)malloc(sizeof(char) * (name_len + 1));
-      for (uint8_t entry_i = 0 ; entry_i < name_len ; ++entry_i) {
+      str = (char*)malloc(sizeof(char) * (name_len + PW_EXTRA));
+      for (uint8_t entry_i = 0 ; entry_i < name_len + PW_EXTRA ; ++entry_i) {
         char c = EEPROM.read(eeprom_ptr++);
         str[entry_i] = c;
       }
@@ -327,32 +386,47 @@ void pwmanInit() {
   }
 }
 
-void pwmanSave() {
-  uint16_t eeprom_ptr = EEPROM_STORAGE_SPACE_START;
-  EEPROM.update(eeprom_ptr++, 'P');
-  EEPROM.update(eeprom_ptr++, 'W');
-  EEPROM.update(eeprom_ptr++, 'm');
-  EEPROM.update(eeprom_ptr++, 'a');
-  EEPROM.update(eeprom_ptr++, 'n');
-  EEPROM.update(eeprom_ptr++, PWMAN_VERSION);
+void eepUpdate(uint16_t ptr, char c) {
+  Serial.print((uint8_t)c);
+  Serial.print(" ");
+  EEPROM.update(ptr, c);
+}
 
+void pwmanSave() {
+  Serial.println("Header");
+  uint16_t eeprom_ptr = EEPROM_STORAGE_SPACE_START;
+  eepUpdate(eeprom_ptr++, 'P');
+  eepUpdate(eeprom_ptr++, 'W');
+  eepUpdate(eeprom_ptr++, 'm');
+  eepUpdate(eeprom_ptr++, 'a');
+  eepUpdate(eeprom_ptr++, 'n');
+  eepUpdate(eeprom_ptr++, PWMAN_VERSION);
+
+  Serial.println("");
+  Serial.println("Entries");
   for (uint8_t i = 0 ; i < MAX_ENTRIES ; ++i ) {
     PasswordEntry *entry = &entries[i];
     if (!entry->name) {
-      EEPROM.update(eeprom_ptr++, 0);
-      EEPROM.update(eeprom_ptr++, 0);
+      Serial.print("Empty: ");
+      eepUpdate(eeprom_ptr++, 0);
+      eepUpdate(eeprom_ptr++, 0);
+      Serial.println("");
       continue;
     }
 
-    EEPROM.update(eeprom_ptr++, strlen(entry->name));
+    Serial.print(entry->name);
+    Serial.print(": ");
+    eepUpdate(eeprom_ptr++, strlen(entry->name));
     for ( uint8_t i = 0 ; i < strlen(entry->name) ; ++i) {
-      EEPROM.update(eeprom_ptr++, entry->name[i]);
+      eepUpdate(eeprom_ptr++, entry->name[i]);
     }
 
-    EEPROM.update(eeprom_ptr++, entry->pwLen);
-    for ( uint8_t i = 0 ; i < entry->pwLen ; ++i) {
-      EEPROM.update(eeprom_ptr++, entry->pw[i]);
+    Serial.print(";");
+    eepUpdate(eeprom_ptr++, entry->pwLen);
+    for ( uint8_t i = 0 ; i < entry->pwLen + PW_EXTRA ; ++i) {
+      eepUpdate(eeprom_ptr++, entry->pw[i]);
     }
+    Serial.println("");
   }
 }
 
@@ -370,4 +444,15 @@ bool checkEEPROM(uint16_t *eeprom_ptr) {
     *eeprom_ptr = ptr;
   }
   return true;
+}
+
+void resetGridEntries() {
+  grid_index = 0;
+}
+
+void resetPassword() {
+  password_length = 0;
+  for (uint8_t i = 0; i <= MAX_UNLOCK_LEN; ++i) {
+    password[i] = 0;
+  }
 }
